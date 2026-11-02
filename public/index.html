@@ -42,6 +42,11 @@ button:disabled { opacity:.5; cursor:default; }
 <div id="appPanel" class="hidden">
   <div class="panel">
     <h2>Riset topik</h2>
+    <label>Skema post</label>
+    <div class="row" style="gap:16px">
+      <label style="margin:0;color:var(--text)"><input type="radio" name="format" value="thread" checked style="width:auto"> Thread berantai</label>
+      <label style="margin:0;color:var(--text)"><input type="radio" name="format" value="single" style="width:auto"> 1 post saja</label>
+    </div>
     <label>Brief riset (topik atau masalah yang ingin diangkat)</label>
     <textarea id="brief" style="min-height:60px" placeholder="contoh: masalah konveksi maklon yang tidak punya sistem catatan revisi"></textarea>
     <div class="row">
@@ -71,6 +76,17 @@ button:disabled { opacity:.5; cursor:default; }
   <div class="panel">
     <h2>Jadwal</h2>
     <div id="list"><div class="hint">Memuat...</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>Reply ke postingan orang lain</h2>
+    <label>Kata kunci pencarian</label>
+    <input id="replyQ" placeholder="contoh: digitalisasi UMKM">
+    <div class="row">
+      <button id="replyResearchBtn">Riset reply</button>
+    </div>
+    <div class="msg" id="replyMsg"></div>
+    <div id="replyList"><div class="hint">Memuat...</div></div>
   </div>
 </div>
 
@@ -218,7 +234,11 @@ async function runResearch() {
     const res = await fetch('/.netlify/functions/riset-topik', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + session.access_token },
-      body: JSON.stringify({ brief, rejected: rejectedTopics }),
+      body: JSON.stringify({
+        brief,
+        rejected: rejectedTopics,
+        format: document.querySelector('input[name="format"]:checked').value,
+      }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Riset gagal.');
@@ -327,11 +347,112 @@ async function loadList() {
   }).join('');
 }
 
+// ===== Reply: draf dari riset-reply, dikirim lewat reply-post setelah disetujui =====
+function setReplyMsg(text, isErr) {
+  const m = $('replyMsg');
+  m.textContent = text;
+  m.className = 'msg ' + (isErr ? 'err' : 'ok');
+}
+
+async function callFn(path, body) {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error('Sesi login habis. Login ulang.');
+  const res = await fetch('/.netlify/functions/' + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + session.access_token },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Permintaan gagal.');
+  return data;
+}
+
+async function dbUpdate(id, patch) {
+  const { error } = await sb.from('reply_drafts').update(patch).eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+function renderReply(r) {
+  const teks = esc((r.target_text || '').slice(0, 240));
+  const sudahKirim = r.status === 'sent';
+  let kirim = '';
+  if (r.status === 'approved' && !r.creation_id) kirim = `<button data-act="create" data-id="${r.id}">Kirim balasan</button>`;
+  if (r.status === 'approved' && r.creation_id) kirim = `<button data-act="publish" data-id="${r.id}">Terbitkan</button>`;
+  const setuju = r.status === 'draft' ? `<button data-act="approve" data-id="${r.id}">Setujui</button>` : '';
+  const simpan = !sudahKirim ? `<button class="ghost" data-act="save" data-id="${r.id}">Simpan edit</button>` : '';
+  const tolak = !sudahKirim ? `<button class="ghost" data-act="reject" data-id="${r.id}">Tolak</button>` : '';
+  return `<div class="item">
+    <div><b>@${esc(r.target_author || '?')}</b> <span class="hint">· skor ${r.skor} · ${esc(r.status)}</span></div>
+    <div class="hint" style="white-space:pre-wrap;margin:6px 0">${teks}</div>
+    ${r.target_url ? `<a class="hint" href="${esc(r.target_url)}" target="_blank" rel="noopener">Buka postingan</a>` : ''}
+    <textarea data-draft="${r.id}" ${sudahKirim ? 'disabled' : ''} style="margin-top:8px">${esc(r.draft_text || '')}</textarea>
+    <div class="row">${setuju}${simpan}${kirim}${tolak}</div>
+    ${r.error ? `<div class="hint" style="color:var(--bad)">${esc(r.error)}</div>` : ''}
+  </div>`;
+}
+
+async function loadReplies() {
+  const { data, error } = await sb.from('reply_drafts')
+    .select('*').neq('status', 'rejected').order('skor', { ascending: false }).limit(50);
+  if (error) { $('replyList').innerHTML = `<div class="hint">${esc(error.message)}</div>`; return; }
+  if (!data.length) { $('replyList').innerHTML = '<div class="hint">Belum ada draf. Isi kata kunci lalu tekan Riset reply.</div>'; return; }
+  $('replyList').innerHTML = data.map(renderReply).join('');
+}
+
+$('replyResearchBtn').addEventListener('click', async () => {
+  const q = $('replyQ').value.trim();
+  if (!q) { setReplyMsg('Isi kata kunci dulu.', true); return; }
+  $('replyResearchBtn').disabled = true;
+  setReplyMsg('Sedang mencari dan menilai postingan...', false);
+  try {
+    const d = await callFn('riset-reply', { q });
+    setReplyMsg(`Dicari ${d.dicari} postingan, dinilai ${d.dinilai ?? 0}, disimpan ${d.disimpan} draf.`, false);
+    await loadReplies();
+  } catch (err) {
+    setReplyMsg(err.message, true);
+  } finally {
+    $('replyResearchBtn').disabled = false;
+  }
+});
+
+$('replyList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const act = btn.dataset.act;
+  btn.disabled = true;
+  try {
+    if (act === 'approve') {
+      await dbUpdate(id, { status: 'approved', disetujui_at: new Date().toISOString() });
+      setReplyMsg('Disetujui. Tekan Kirim balasan untuk menyiapkan.', false);
+    } else if (act === 'reject') {
+      await dbUpdate(id, { status: 'rejected' });
+    } else if (act === 'save') {
+      const txt = document.querySelector(`textarea[data-draft="${id}"]`).value.trim();
+      if (!txt || txt.length > 500) throw new Error('Draf kosong atau lebih dari 500 karakter.');
+      await dbUpdate(id, { draft_text: txt });
+      setReplyMsg('Draf tersimpan.', false);
+    } else if (act === 'create') {
+      await callFn('reply-post', { id, action: 'create' });
+      setReplyMsg('Balasan disiapkan. Tunggu 30 detik, lalu tekan Terbitkan.', false);
+    } else if (act === 'publish') {
+      await callFn('reply-post', { id, action: 'publish' });
+      setReplyMsg('Balasan terbit.', false);
+    }
+    await loadReplies();
+  } catch (err) {
+    setReplyMsg(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 async function showApp(session) {
   $('loginPanel').classList.add('hidden');
   $('appPanel').classList.remove('hidden');
   resetForm();
   loadList();
+  loadReplies();
 }
 
 $('loginBtn').addEventListener('click', async () => {
