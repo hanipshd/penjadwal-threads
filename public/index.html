@@ -85,6 +85,13 @@ button:disabled { opacity:.5; cursor:default; }
     <div class="row">
       <button id="replyResearchBtn">Riset reply</button>
     </div>
+    <label>Atau tempel satu postingan: link</label>
+    <input id="linkUrl" placeholder="https://www.threads.com/@nama/post/...">
+    <label>Teks postingannya</label>
+    <textarea id="linkText" rows="3" placeholder="Salin teks postingan orang itu ke sini"></textarea>
+    <div class="row">
+      <button id="linkBtn">Buat draf dari link</button>
+    </div>
     <div class="msg" id="replyMsg"></div>
     <div id="replyList"><div class="hint">Memuat...</div></div>
   </div>
@@ -398,6 +405,24 @@ async function loadReplies() {
   if (!data.length) { $('replyList').innerHTML = '<div class="hint">Belum ada draf. Isi kata kunci lalu tekan Riset reply.</div>'; return; }
   $('replyList').innerHTML = data.map(renderReply).join('');
 }
+
+$('linkBtn').addEventListener('click', async () => {
+  const url = $('linkUrl').value.trim();
+  const text = $('linkText').value.trim();
+  if (!url || !text) { setReplyMsg('Isi link dan teks postingannya.', true); return; }
+  $('linkBtn').disabled = true;
+  setReplyMsg('Membuat draf balasan...', false);
+  try {
+    await callFn('riset-link', { url, text });
+    setReplyMsg('Draf dibuat. Cek daftar di bawah.', false);
+    $('linkUrl').value = ''; $('linkText').value = '';
+    await loadReplies();
+  } catch (err) {
+    setReplyMsg(err.message, true);
+  } finally {
+    $('linkBtn').disabled = false;
+  }
+});
 
 $('replyResearchBtn').addEventListener('click', async () => {
   const q = $('replyQ').value.trim();
