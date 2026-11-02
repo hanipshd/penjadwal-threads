@@ -369,8 +369,10 @@ async function callFn(path, body) {
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + session.access_token },
     body: JSON.stringify(body),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Permintaan gagal.');
+  const raw = await res.text();
+  let data = {};
+  try { data = JSON.parse(raw); } catch { /* bukan JSON */ }
+  if (!res.ok) throw new Error(data.error || `Permintaan gagal (HTTP ${res.status}): ${raw.slice(0, 200)}`);
   return data;
 }
 
@@ -385,7 +387,11 @@ function renderReply(r) {
   let kirim = '';
   if (r.status === 'approved' && !r.creation_id) kirim = `<button data-act="create" data-id="${r.id}">Kirim balasan</button>`;
   if (r.status === 'approved' && r.creation_id) kirim = `<button data-act="publish" data-id="${r.id}">Terbitkan</button>`;
-  const setuju = r.status === 'draft' ? `<button data-act="approve" data-id="${r.id}">Setujui</button>` : '';
+  // ID dari link (19 digit) tidak valid untuk API Threads, jadi drafnya dibalas manual: salin lalu tempel di Threads.
+  const manual = String(r.target_post_id || '').length >= 19;
+  if (manual) kirim = '';
+  const salin = (manual && !sudahKirim) ? `<button data-act="copyopen" data-id="${r.id}">Salin &amp; buka postingan</button><button class="ghost" data-act="manualdone" data-id="${r.id}">Tandai sudah dibalas</button>` : '';
+  const setuju = (r.status === 'draft' && !manual) ? `<button data-act="approve" data-id="${r.id}">Setujui</button>` : '';
   const simpan = !sudahKirim ? `<button class="ghost" data-act="save" data-id="${r.id}">Simpan edit</button>` : '';
   const tolak = !sudahKirim ? `<button class="ghost" data-act="reject" data-id="${r.id}">Tolak</button>` : '';
   return `<div class="item">
@@ -393,7 +399,7 @@ function renderReply(r) {
     <div class="hint" style="white-space:pre-wrap;margin:6px 0">${teks}</div>
     ${r.target_url ? `<a class="hint" href="${esc(r.target_url)}" target="_blank" rel="noopener">Buka postingan</a>` : ''}
     <textarea data-draft="${r.id}" ${sudahKirim ? 'disabled' : ''} style="margin-top:8px">${esc(r.draft_text || '')}</textarea>
-    <div class="row">${setuju}${simpan}${kirim}${tolak}</div>
+    <div class="row">${setuju}${salin}${simpan}${kirim}${tolak}</div>
     ${r.error ? `<div class="hint" style="color:var(--bad)">${esc(r.error)}</div>` : ''}
   </div>`;
 }
@@ -457,6 +463,15 @@ $('replyList').addEventListener('click', async (e) => {
       if (!txt || txt.length > 500) throw new Error('Draf kosong atau lebih dari 500 karakter.');
       await dbUpdate(id, { draft_text: txt });
       setReplyMsg('Draf tersimpan.', false);
+    } else if (act === 'copyopen') {
+      const txt = document.querySelector(`textarea[data-draft="${id}"]`).value.trim();
+      await navigator.clipboard.writeText(txt);
+      const link = btn.closest('.item').querySelector('a[href]');
+      if (link) window.open(link.href, '_blank', 'noopener');
+      setReplyMsg('Teks balasan tersalin. Tempel di kolom balasan postingan itu.', false);
+    } else if (act === 'manualdone') {
+      await dbUpdate(id, { status: 'sent', sent_at: new Date().toISOString() });
+      setReplyMsg('Ditandai sudah dibalas.', false);
     } else if (act === 'create') {
       await callFn('reply-post', { id, action: 'create' });
       setReplyMsg('Balasan disiapkan. Tunggu 30 detik, lalu tekan Terbitkan.', false);
