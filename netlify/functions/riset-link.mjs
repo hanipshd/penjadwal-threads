@@ -5,12 +5,47 @@
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-const SYSTEM = `Kamu membantu pemilik akun Threads brand UMKM Bertumbuh menulis balasan untuk satu postingan orang lain.
-Tulis satu draf balasan dalam Bahasa Indonesia santai, maksimal 280 karakter.
-- Jawab isi postingan dengan satu contoh konkret atau pengalaman yang masuk akal.
-- Jangan promosi, jangan menyebut nama aplikasi, jangan pakai link, jangan pakai hashtag.
-- Jangan pakai penutup generik seperti "semoga bermanfaat".
+const SYSTEM = `Kamu membantu pemilik akun Threads brand UMKM Bertumbuh menulis satu balasan untuk satu postingan orang lain.
+
+Gaya balasan pemilik akun. Ikuti ini:
+- Bahasa Indonesia santai seperti ngobrol di Threads. Singkatan umum boleh (yg, klo, gmn, dll). Sapaan "mas" atau "kak" boleh jika cocok, jangan berlebihan.
+- Langsung jawab inti postingan, tanpa basa-basi pembuka.
+- Jika postingan meminta tips: jawab dengan daftar bernomor 3 sampai 5 poin, tiap poin kalimat perintah yang pendek.
+- Jika postingan adalah pertanyaan lanjutan atau orang bingung: mulai dengan "Jadi misalnya ..." lalu beri SATU contoh konkret dari kerja nyata, diurai dalam daftar bernomor, lalu ringkas dengan "Nah ...".
+- Penutup: "Semoga bermanfaat" boleh, dengan satu atau dua emoji seperti 🙏🏻 atau 😉. Jika orang tampak baru belajar atau masih bingung, boleh tambah satu ajakan ringan seperti "Klo mau lebih jelas dan dipandu sampe bisa boleh dm aja 🤝". Jangan pakai ajakan itu di setiap balasan.
+- Maksimal 500 karakter. Baris baru boleh.
+- Dilarang: link, hashtag, menyebut nama aplikasi atau produk, klaim hasil yang tidak pasti, mengarang pengalaman yang tidak masuk akal.
+
+Contoh 1
+Postingan: warga threads, stlh menimbang lama, AKHIRNYAAA aku memutuskan gabung jd warga claude pro, boleh sharing ga tips n trik atau hal-hal yang bisa aku manfaatin dgn claude selama 1 bulan agar tidak sia-sia
+Balasan:
+1. Focus arahnya mau dibuat apa claude ini
+2. Perbanyak riset sampe dapet hasil yang diinginkan
+3. Minta claude untuk pecah per agent agar lebih efisien
+4. Jadikan tiap agent skill
+5. Terakhir minta buatkan tools automation untuk melakukan project tersebut dari proses awal sampai akhir.
+Semoga bermanfaat
+
+Contoh 2
+Postingan: Menarik sih, pecah per agent itu maksutnya gmn mas? Soalnya jg br belajar claude pro jg nih
+Balasan:
+Jadi misalnya project bikin video motion graphic, nah untuk 1 project itu kan banyak bagian2 yg dikerjakan seperti ini :
+1. Riset script/story teling/naskah
+2. Board/scene planner (mood board)
+3. Voice over, backsound, sfx
+4. Dll sampai composer/render
+Nah itu semua nanti dijadikan agent2 per jobdesk oleh claude. Kita tinggal intruksikan ke claude.
+Semoga bermanfaat🙏🏻🙏🏻😉
+Klo mau lebih jelas dan dipandu sampe bisa boleh dm aja🤝
+
 Balas HANYA dengan JSON valid: {"draft": "..."}`;
+
+// Pemeriksaan otomatis: buang draf yang melanggar aturan (link, hashtag) dan potong ke batas Threads 500 karakter.
+export function bersihkan(teks) {
+  const t = String(teks || "").trim();
+  if (!t || /https?:\/\/|www\.|#\S/i.test(t)) return "";
+  return t.slice(0, 500);
+}
 
 export function parseLink(url) {
   const m = String(url || "").match(/threads\.(?:com|net)\/@([^/?#]+)\/post\/([A-Za-z0-9_-]+)/);
@@ -53,7 +88,7 @@ async function callGemini(system, userMessage) {
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: "user", parts: [{ text: userMessage }] }],
-      generationConfig: { maxOutputTokens: 2000, responseMimeType: "application/json" },
+      generationConfig: { maxOutputTokens: 3000, responseMimeType: "application/json" },
     }),
   });
   if (!res.ok) throw new Error(`API Gemini gagal (${res.status}): ${(await res.text()).slice(0, 200)}`);
@@ -82,8 +117,8 @@ export default async function handler(req) {
   try {
     const raw = await callGemini(SYSTEM, `Postingan dari @${info.username}:\n${teks.slice(0, 1500)}`);
     const data = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
-    const draft = String(data.draft || "").trim().slice(0, 500);
-    if (!draft) return json(502, { error: "Gemini tidak menghasilkan draf." });
+    const draft = bersihkan(data.draft);
+    if (!draft) return json(502, { error: "Draf dari Gemini ditolak (kosong, ada link atau hashtag). Coba lagi." });
 
     const hasil = await sb("reply_drafts?on_conflict=user_id,target_post_id", {
       method: "POST",
