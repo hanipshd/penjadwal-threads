@@ -93,6 +93,7 @@ button:disabled { opacity:.5; cursor:default; }
       <button id="linkBtn">Buat draf dari link</button>
     </div>
     <div class="msg" id="replyMsg"></div>
+    <div class="row hidden" id="dupAksi"><button id="dupUlang">Buat ulang draf</button><button class="ghost" id="dupLewati">Lewati</button></div>
     <div id="replyList"><div class="hint">Memuat...</div></div>
   </div>
 </div>
@@ -372,7 +373,7 @@ async function callFn(path, body) {
   const raw = await res.text();
   let data = {};
   try { data = JSON.parse(raw); } catch { /* bukan JSON */ }
-  if (!res.ok) throw new Error(data.error || `Permintaan gagal (HTTP ${res.status}): ${raw.slice(0, 200)}`);
+  if (!res.ok) { const e = new Error(data.error || `Permintaan gagal (HTTP ${res.status}): ${raw.slice(0, 200)}`); e.data = data; throw e; }
   return data;
 }
 
@@ -412,22 +413,36 @@ async function loadReplies() {
   $('replyList').innerHTML = data.map(renderReply).join('');
 }
 
-$('linkBtn').addEventListener('click', async () => {
+async function buatDrafLink(ulang) {
   const url = $('linkUrl').value.trim();
   const text = $('linkText').value.trim();
   if (!url || !text) { setReplyMsg('Isi link dan teks postingannya.', true); return; }
   $('linkBtn').disabled = true;
+  $('dupAksi').classList.add('hidden');
   setReplyMsg('Membuat draf balasan...', false);
   try {
-    await callFn('riset-link', { url, text });
-    setReplyMsg('Draf dibuat. Cek daftar di bawah.', false);
+    const d = await callFn('riset-link', { url, text, ulang: !!ulang });
+    setReplyMsg(d.diperbarui ? 'Draf lama diganti dengan yang baru. Cek daftar di bawah.' : 'Draf dibuat. Cek daftar di bawah.', false);
     $('linkUrl').value = ''; $('linkText').value = '';
     await loadReplies();
   } catch (err) {
-    setReplyMsg(err.message, true);
+    if (err.data && err.data.kode === 'duplikat') {
+      const sent = err.data.status_lama === 'sent' ? ' Draf lama sudah ditandai terkirim; isinya tetap tercatat dan hanya teks drafnya yang diganti.' : '';
+      setReplyMsg(`Postingan ini sudah ada di daftar (status: ${err.data.status_lama}). Buat ulang draf dengan Gemini, atau lewati?${sent}`, true);
+      $('dupAksi').classList.remove('hidden');
+    } else {
+      setReplyMsg(err.message, true);
+    }
   } finally {
     $('linkBtn').disabled = false;
   }
+}
+$('linkBtn').addEventListener('click', () => buatDrafLink(false));
+$('dupUlang').addEventListener('click', () => buatDrafLink(true));
+$('dupLewati').addEventListener('click', () => {
+  $('dupAksi').classList.add('hidden');
+  $('linkUrl').value = ''; $('linkText').value = '';
+  setReplyMsg('Dilewati.', false);
 });
 
 $('replyResearchBtn').addEventListener('click', async () => {

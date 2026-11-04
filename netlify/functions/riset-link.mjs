@@ -130,14 +130,34 @@ export default async function handler(req) {
   if (teks.length < 10) return json(400, { error: "Tempel juga teks postingannya." });
 
   try {
+    // Cek duplikat dulu (sebelum memanggil Gemini). Jika sudah ada, tanyakan ke pemilik: buat ulang atau lewati.
+    const ada = await sb(
+      `reply_drafts?user_id=eq.${user.id}&target_post_id=eq.${info.id}&select=id,status,draft_text`
+    );
+    const lama = ada && ada[0];
+    if (lama && !body.ulang) {
+      return json(409, {
+        kode: "duplikat",
+        status_lama: lama.status,
+        error: `Postingan ini sudah ada di daftar draf (status: ${lama.status}).`,
+      });
+    }
+
     const raw = await callGemini(SYSTEM, `Postingan dari @${info.username}:\n${teks.slice(0, 1500)}`);
     const data = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
     const draft = bersihkan(data.draft);
     if (!draft) return json(502, { error: "Draf dari Gemini ditolak (kosong, ada link atau hashtag). Coba lagi." });
 
-    const hasil = await sb("reply_drafts?on_conflict=user_id,target_post_id", {
+    if (lama) {
+      // Buat ulang: timpa isi draf lama. Draf yang sudah berstatus sent tetap sent.
+      const patch = { draft_text: draft, target_text: teks.slice(0, 1500), error: null };
+      if (lama.status !== "sent") Object.assign(patch, { status: "draft", creation_id: null, creation_at: null });
+      await sb(`reply_drafts?id=eq.${lama.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      return json(200, { ok: true, target_post_id: info.id, diperbarui: true });
+    }
+
+    await sb("reply_drafts", {
       method: "POST",
-      headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
       body: JSON.stringify([{
         user_id: user.id,
         target_post_id: info.id,
@@ -149,7 +169,6 @@ export default async function handler(req) {
         status: "draft",
       }]),
     });
-    if (!Array.isArray(hasil) || !hasil.length) return json(409, { error: "Postingan ini sudah ada di daftar draf." });
     return json(200, { ok: true, target_post_id: info.id });
   } catch (err) {
     return json(502, { error: err.message });
