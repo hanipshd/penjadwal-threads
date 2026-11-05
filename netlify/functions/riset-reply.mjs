@@ -102,22 +102,36 @@ async function cariPostingan(q, token) {
   return body.data || [];
 }
 
+// Jika model utama sibuk (429/5xx), langsung coba model cadangan. Error lain dilempar apa adanya.
+const STATUS_SEMENTARA = [429, 500, 502, 503, 504];
+
 async function callGemini(system, userMessage) {
-  const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-    method: "POST",
-    headers: { "x-goog-api-key": process.env.GEMINI_API_KEY, "content-type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: "user", parts: [{ text: userMessage }] }],
-      generationConfig: { maxOutputTokens: 6000, responseMimeType: "application/json" },
-    }),
-  });
-  if (!res.ok) throw new Error(`API Gemini gagal (${res.status}): ${(await res.text()).slice(0, 200)}`);
-  const body = await res.json();
-  const parts = body.candidates?.[0]?.content?.parts || [];
-  // Lewati bagian "thought" (proses berpikir model), hanya ambil jawabannya.
-  return parts.filter((p) => !p.thought).map((p) => p.text || "").join("");
+  const utama = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+  const cadangan = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.6-flash";
+  const daftar = utama === cadangan ? [utama] : [utama, cadangan];
+  let sibuk = null;
+  for (const model of daftar) {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: "POST",
+      headers: { "x-goog-api-key": process.env.GEMINI_API_KEY, "content-type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: userMessage }] }],
+        generationConfig: { maxOutputTokens: 6000, responseMimeType: "application/json" },
+      }),
+    });
+    if (res.ok) {
+      const body = await res.json();
+      const parts = body.candidates?.[0]?.content?.parts || [];
+      // Lewati bagian "thought" (proses berpikir model), hanya ambil jawabannya.
+      return parts.filter((p) => !p.thought).map((p) => p.text || "").join("");
+    }
+    if (!STATUS_SEMENTARA.includes(res.status)) {
+      throw new Error(`API Gemini gagal (${res.status}): ${(await res.text()).slice(0, 200)}`);
+    }
+    sibuk = res.status;
+  }
+  throw new Error(`Gemini sedang sibuk (${sibuk}) di semua model. Tunggu satu atau dua menit, lalu coba lagi.`);
 }
 
 // Pemeriksaan otomatis: buang draf yang melanggar aturan (link, hashtag) dan potong ke batas Threads 500 karakter.
